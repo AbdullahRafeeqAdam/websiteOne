@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VIN Decoder</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        h1 {
+            text-align: center;
+        }
+        form {
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        label, input, button {
+            display: block;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        input {
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+        button {
+            padding: 10px;
+            font-size: 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #report {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .report-title {
+            font-size: 24px;
+            margin-bottom: 20px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .report-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .report-item:last-child {
+            border-bottom: none;
+        }
+        .report-label {
+            font-weight: bold;
+            color: #555;
+        }
+        .report-value {
+            color: #000;
+        }
+        #download-pdf {
+            display: none;
+            margin: 20px auto;
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #download-pdf:hover {
+            background-color: #218838;
+        }
+    </style>
+</head>
+<body>
+    <h1>VIN Decoder</h1>
+    <form id="vin-form">
+        <label for="vin">Enter VIN:</label>
+        <input type="text" id="vin" name="vin" required>
+        <button type="submit">Generate Report</button>
+    </form>
+    <div id="report"></div>
+    <button id="download-pdf">Download PDF</button>
+    <form id="payment-form" style="display:none;">
+        <label for="cardholder-name">Cardholder Name:</label>
+        <input type="text" id="cardholder-name" required>
+        <div id="dropin-container"></div>
+        <button type="submit">Submit Payment</button>
+    </form>
+
+    <!-- Include Axios library -->
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <!-- Include Braintree Drop-in UI -->
+    <script src="https://js.braintreegateway.com/web/dropin/1.32.0/js/dropin.min.js"></script>
+    <!-- Include jsPDF library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.4.0/jspdf.umd.min.js"></script>
+    <script>
+        const apiPrefix = "https://api.vindecoder.eu/3.2";
+        const apiKey = "your_vindecoder_api_key";
+        const secretKey = "your_vindecoder_secret_key";
+        const id = "decode";
+
+        document.getElementById('vin-form').addEventListener('submit', function(event) {
+            event.preventDefault(); // Prevent the form from submitting the traditional way
+
+            const vin = document.getElementById('vin').value.toUpperCase();
+
+            // Generate control sum
+            const controlSum = CryptoJS.SHA1(`${vin}|${id}|${apiKey}|${secretKey}`)
+                .toString(CryptoJS.enc.Hex)
+                .substring(0, 10);
+
+            // Construct the URL
+            const url = `${apiPrefix}/${apiKey}/${controlSum}/decode/${vin}.json`;
+
+            // Make the GET request
+            axios.get(url)
+                .then(response => {
+                    const data = response.data;
+                    let reportHtml = '<div class="report-title">Vehicle Report</div>';
+                    reportHtml += formatReport(data);
+                    document.getElementById('report').innerHTML = reportHtml;
+                    document.getElementById('download-pdf').style.display = 'block';
+                    document.getElementById('download-pdf').onclick = function() {
+                        downloadPDF(vin, data);
+                    };
+
+                    // Show payment form
+                    document.getElementById('payment-form').style.display = 'block';
+
+                    // Get the client token from the server
+                    axios.get('http://localhost:3000/client_token')
+                        .then(response => {
+                            const clientToken = response.data.clientToken;
+
+                            // Initialize Braintree Drop-in UI
+                            braintree.dropin.create({
+                                authorization: clientToken,
+                                container: '#dropin-container'
+                            }, function(createErr, instance) {
+                                if (createErr) {
+                                    console.error(createErr);
+                                    return;
+                                }
+
+                                document.getElementById('payment-form').addEventListener('submit', function(event) {
+                                    event.preventDefault();
+
+                                    instance.requestPaymentMethod(function(err, payload) {
+                                        if (err) {
+                                            console.error(err);
+                                            return;
+                                        }
+
+                                        axios.post('http://localhost:3000/checkout', {
+                                            paymentMethodNonce: payload.nonce,
+                                            amount: '10.00' // Set the amount for the transaction
+                                        })
+                                        .then(result => {
+                                            if (result.data.success) {
+                                                alert('Payment successful!');
+                                            } else {
+                                                alert('Payment failed: ' + result.data.error);
+                                            }
+                                        })
+                                        .catch(error => {
+                                            console.error('Payment error: ', error);
+                                        });
+                                    });
+                                });
+                            });
+                        })
+                        .catch(error => {
+                            console.error('Error getting client token: ', error);
+                        });
+                })
+                .catch(error => {
+                    console.error(error);
+                    document.getElementById('report').textContent = "Error fetching report";
+                });
+        });
+
+        // Function to format the report data
+        function formatReport(data) {
+            let reportHtml = '';
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    if (typeof data[key] === 'object' && data[key] !== null) {
+                        reportHtml += `<div class="report-item"><div class="report-label">${key}:</div><div class="report-value">${formatReport(data[key])}</div></div>`;
+                    } else {
+                        reportHtml += `<div class="report-item"><div class="report-label">${key}:</div><div class="report-value">${data[key]}</div></div>`;
+                    }
+                }
+            }
+            return reportHtml;
+        }
+
+        // Function to download the report as a PDF
+        function downloadPDF(vin, data) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            doc.text(`Vehicle Report for VIN: ${vin}`, 10, 10);
+
+            let yPosition = 20;
+            function addDataToPDF(data, indent = 0) {
+                for (const key in data) {
+                    if (data.hasOwnProperty(key)) {
+                        if (typeof data[key] === 'object' && data[key] !== null) {
+                            doc.text(`${' '.repeat(indent)}${key}:`, 10, yPosition);
+                            yPosition += 10;
+                            addDataToPDF(data[key], indent + 2);
+                        } else {
+                            doc.text(`${' '.repeat(indent)}${key}: ${data[key]}`, 10, yPosition);
+                            yPosition += 10;
+                        }
+                        if (yPosition > 280) {
+                            doc.addPage();
+                            yPosition = 10;
+                        }
+                    }
+                }
+            }
+
+            addDataToPDF(data);
+
+            doc.save(`Vehicle_Report_${vin}.pdf`);
+        }
+
+        // Include CryptoJS library
+        (function() {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js';
+            script.onload = function() {
+                console.log('CryptoJS loaded');
+            };
+            document.head.appendChild(script);
+        })();
+    </script>
+</body>
+</html>
